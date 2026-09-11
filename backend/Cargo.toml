@@ -1,0 +1,25 @@
+[package]
+name = "pv-backend"
+version = "0.1.0"
+edition = "2021"
+description = "乳品巴氏杀菌验证平台后端(只读镜像 + 验证分析,不提供设定值、不控制阀门)"
+
+[features]
+default = []
+# 真实 OPC UA 只读接入(需要 libssl;默认构建使用模拟源)
+opcua-live = ["dep:opcua", "dep:parking_lot"]
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "chrono", "json", "migrate"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+opcua = { version = "0.12", optional = true }
+parking_lot = { version = "0.12", optional = true }
+
+[dev-dependencies]

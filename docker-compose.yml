@@ -1,0 +1,18 @@
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    environment:
+      POSTGRES_USER: pv
+      POSTGRES_PASSWORD: pv
+      POSTGRES_DB: pasteurization
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pv -d pasteurization"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+volumes:
+  pgdata:
