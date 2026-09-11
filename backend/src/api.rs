@@ -29,6 +29,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/batches/{id}/analyze", post(analyze))
         .route("/api/batches/{id}/findings", get(list_findings))
         .route("/api/batches/{id}/timeline", get(timeline))
+        .route("/api/batches/{id}/evidence", get(evidence))
         .route("/api/batches/{id}/passage", get(passage))
         .route(
             "/api/configs/holding-tube",
@@ -48,6 +49,7 @@ pub fn router(state: AppState) -> Router {
 // ---------- 错误与角色 ----------
 
 pub enum ApiError {
+    BadRequest(String),
     NotFound(String),
     Forbidden(String),
     Conflict(String),
@@ -57,6 +59,7 @@ pub enum ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
         let (code, msg) = match self {
+            ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
             ApiError::NotFound(m) => (StatusCode::NOT_FOUND, m),
             ApiError::Forbidden(m) => (StatusCode::FORBIDDEN, m),
             ApiError::Conflict(m) => (StatusCode::CONFLICT, m),
@@ -112,7 +115,10 @@ async fn create_batch(
     State(s): State<AppState>,
     Json(req): Json<CreateBatchReq>,
 ) -> Result<Json<Batch>, ApiError> {
-    Ok(Json(repo::create_batch(&s.pool, &req.product_name).await?))
+    validate_product_name(&req.product_name).map_err(ApiError::BadRequest)?;
+    Ok(Json(
+        repo::create_batch(&s.pool, req.product_name.trim()).await?,
+    ))
 }
 
 async fn list_batches(State(s): State<AppState>) -> Result<Json<Vec<Batch>>, ApiError> {
@@ -178,9 +184,7 @@ async fn freeze_tube(
     Json(req): Json<FreezeTubeReq>,
 ) -> Result<Json<HoldingTubeConfig>, ApiError> {
     require_engineer(&headers)?;
-    if req.volume_l <= 0.0 {
-        return Err(ApiError::Conflict("容积必须为正".into()));
-    }
+    validate_volume_l(req.volume_l).map_err(ApiError::BadRequest)?;
     Ok(Json(
         repo::freeze_tube_config(&s.pool, req.volume_l, &user(&headers), req.note.as_deref())
             .await?,
@@ -210,11 +214,12 @@ async fn freeze_instrument(
     Json(req): Json<FreezeInstrumentReq>,
 ) -> Result<Json<InstrumentVersion>, ApiError> {
     require_engineer(&headers)?;
+    validate_instrument(&req.instrument_id, &req.label).map_err(ApiError::BadRequest)?;
     Ok(Json(
         repo::freeze_instrument(
             &s.pool,
-            &req.instrument_id,
-            &req.label,
+            req.instrument_id.trim(),
+            req.label.trim(),
             req.calibrated_at,
             &user(&headers),
         )
@@ -244,14 +249,26 @@ async fn freeze_spec(
     Json(req): Json<FreezeSpecReq>,
 ) -> Result<Json<ValidationSpec>, ApiError> {
     require_engineer(&headers)?;
+    let max_clock_skew_s = req.max_clock_skew_s.unwrap_or(1.0);
+    let max_gap_s = req.max_gap_s.unwrap_or(10.0);
+    let max_divert_feedback_s = req.max_divert_feedback_s.unwrap_or(2.0);
+    let flow_drop_ratio = req.flow_drop_ratio.unwrap_or(0.6);
+    validate_spec_thresholds(
+        req.min_hold_temp_c,
+        max_clock_skew_s,
+        max_gap_s,
+        max_divert_feedback_s,
+        flow_drop_ratio,
+    )
+    .map_err(ApiError::BadRequest)?;
     Ok(Json(
         repo::freeze_spec(
             &s.pool,
             req.min_hold_temp_c,
-            req.max_clock_skew_s.unwrap_or(1.0),
-            req.max_gap_s.unwrap_or(10.0),
-            req.max_divert_feedback_s.unwrap_or(2.0),
-            req.flow_drop_ratio.unwrap_or(0.6),
+            max_clock_skew_s,
+            max_gap_s,
+            max_divert_feedback_s,
+            flow_drop_ratio,
             &user(&headers),
             req.note.as_deref(),
         )
@@ -342,6 +359,8 @@ struct TimelineResponse {
     findings: Vec<StoredFinding>,
     tube_config: Option<HoldingTubeConfig>,
     spec: Option<ValidationSpec>,
+    /// 本批遥测实际涉及的传感器来源(位号 + 通道 + 安装位置),供界面标注证据边界
+    sensor_sites: Vec<SensorSite>,
 }
 
 async fn timeline(
@@ -357,6 +376,7 @@ async fn timeline(
     let findings = repo::list_findings(&s.pool, id).await?;
     let tube_config = repo::active_tube_config(&s.pool, batch.started_at).await?;
     let spec = repo::active_spec(&s.pool, batch.started_at).await?;
+    let sensor_sites = sensor_sites_of(&temps, &flows, &diverts);
     Ok(Json(TimelineResponse {
         batch,
         temps,
@@ -366,6 +386,63 @@ async fn timeline(
         findings,
         tube_config,
         spec,
+        sensor_sites,
+    }))
+}
+
+/// 证据清单单次返回上限(防止异常长批次拖垮响应;total 仍报告全量条数)
+const EVIDENCE_MAX_ROWS: usize = 5000;
+
+#[derive(Deserialize)]
+struct EvidenceQuery {
+    /// temperature | flow | divert;缺省或 all 为全部通道
+    channel: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct EvidenceResponse {
+    batch: Batch,
+    window_start: DateTime<Utc>,
+    window_end: DateTime<Utc>,
+    total: usize,
+    truncated: bool,
+    rows: Vec<EvidenceRow>,
+}
+
+/// 审核证据清单:逐条列出批次窗口内的温度/流量/分流样本,
+/// 每行显式标注所属产品批(id + 产品名)与传感器安装位置 ——
+/// 热历程证据的来源边界在此可逐条核对。
+async fn evidence(
+    State(s): State<AppState>,
+    Path(id): Path<i64>,
+    Query(q): Query<EvidenceQuery>,
+) -> Result<Json<EvidenceResponse>, ApiError> {
+    let batch = repo::get_batch(&s.pool, id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("批次 {id} 不存在")))?;
+    let channel = match q.channel.as_deref() {
+        None | Some("all") => None,
+        Some(c) => Some(Channel::parse(c).ok_or_else(|| {
+            ApiError::BadRequest(format!("未知通道「{c}」(应为 temperature|flow|divert)"))
+        })?),
+    };
+    let end = batch.ended_at.unwrap_or_else(Utc::now);
+    let (temps, flows, diverts) = repo::telemetry_window(&s.pool, batch.started_at, end).await?;
+    let mut rows = evidence_rows(id, &batch.product_name, &temps, &flows, &diverts);
+    if let Some(c) = channel {
+        rows.retain(|r| r.channel == c);
+    }
+    let total = rows.len();
+    let truncated = total > EVIDENCE_MAX_ROWS;
+    rows.truncate(EVIDENCE_MAX_ROWS);
+    let window_start = batch.started_at;
+    Ok(Json(EvidenceResponse {
+        batch,
+        window_start,
+        window_end: end,
+        total,
+        truncated,
+        rows,
     }))
 }
 

@@ -15,9 +15,23 @@
                                     │ REST
                           ┌─────────▼────────────┐
                           │ Svelte 前端           │
-                          │ 通过窗重建/时间线/发现 │
+                          │ 通过窗/时间线/发现/证据审核 │
                           └──────────────────────┘
 ```
+
+### 证据归属(批次 × 安装位置)
+
+每条遥测样本在审核界面与 `/api/batches/{id}/evidence` 中都显式携带:**所属产品批**
+(id + 产品名)、**通道**、**位号**与**安装位置**(`sensor_position` 登记:TT-101→保持管出口、
+FT-201→保持管入口、XV-301→分流阀;未登记位号显式标注"未登记位置",不留空)。
+每条验证发现的 `detail.evidence` 同样给出通道/位号/安装位置 —— 热历程证据的来源边界
+可逐条核对,不依赖隐式约定。
+
+### 冻结输入校验
+
+开批与冻结配置在**前端提交前**与**后端落库前**双重校验(后端返回 400):
+产品名非空、容积为有限正数(含 NaN 拒绝)、仪表位号/标签非空、
+规格各时间阈值为有限正数、流量突降比例 ∈ (0, 1]。
 
 ### 安全边界(由类型系统与 API 面强制)
 
@@ -73,7 +87,7 @@ cargo run --features opcua-live
 # 3. 前端
 cd frontend && npm install && npm run dev   # http://localhost:5173
 
-# 4. 测试(12 个场景/单元测试,纯函数,无需数据库)
+# 4. 测试(20 个场景/单元测试,纯函数,无需数据库)
 cd backend && cargo test
 ```
 
@@ -92,7 +106,8 @@ cd backend && cargo test
 | POST | `/api/configs/spec` | engineer | 冻结验证规格(限值/阈值) |
 | POST | `/api/notices` | 任意 | 录入工程通知(校准/改造事实) |
 | POST | `/api/batches/{id}/analyze` | 任意 | 运行全部检查,落库发现 |
-| GET | `/api/batches/{id}/timeline` | 任意 | 时间线(遥测+事件+发现) |
+| GET | `/api/batches/{id}/timeline` | 任意 | 时间线(遥测+事件+发现+传感器来源) |
+| GET | `/api/batches/{id}/evidence?channel=…` | 任意 | 审核证据清单(逐条:批次归属+安装位置) |
 | GET | `/api/batches/{id}/passage?entry=…` | 任意 | 单点通过窗重建 |
 | GET | `/api/batches/{id}/findings` | 任意 | 发现列表 |
 

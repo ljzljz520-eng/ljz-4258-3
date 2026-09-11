@@ -6,6 +6,7 @@
   import PassageView from './components/PassageView.svelte';
   import ConfigPanel from './components/ConfigPanel.svelte';
   import EventBar from './components/EventBar.svelte';
+  import EvidencePanel from './components/EvidencePanel.svelte';
 
   let role = 'operator';
   let user = 'op-1';
@@ -28,8 +29,9 @@
   }
   async function selectBatch(id) { selected = id; await refreshTimeline(); }
   async function createBatch() {
+    if (!productName.trim()) { error = '产品名不能为空'; return; }
     try {
-      const b = await api.createBatch(productName);
+      const b = await api.createBatch(productName.trim());
       await refreshBatches();
       await selectBatch(b.id);
     } catch (e) { error = e.message; }
@@ -108,6 +110,7 @@
           events={timeline.events}
           findings={timeline.findings}
           spec={timeline.spec}
+          sensorSites={timeline.sensor_sites || []}
         />
         {#if timeline.tube_config}
           <p class="meta">冻结容积:{timeline.tube_config.volume_l} L(#{timeline.tube_config.id},{timeline.tube_config.frozen_by} 冻结)
@@ -120,6 +123,11 @@
       <section>
         <h2>保持段通过窗重建</h2>
         <PassageView batch={timeline.batch} />
+      </section>
+
+      <section>
+        <h2>热历程证据清单 <small>逐条审核:样本 → 产品批 / 安装位置</small></h2>
+        <EvidencePanel batch={timeline.batch} />
       </section>
 
       <section>

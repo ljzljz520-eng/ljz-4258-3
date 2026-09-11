@@ -14,6 +14,17 @@
   };
   const SEV_LABEL = { info: '提示', warning: '警告', critical: '严重' };
   const fmt = (iso) => (iso ? new Date(iso).toLocaleTimeString() : '');
+  // 证据来源:优先取 detail.evidence(通道/位号/安装位置),其次 detail.position
+  const srcOf = (f) => {
+    const d = f.detail || {};
+    if (d.evidence && d.evidence.positions) {
+      const positions = d.evidence.positions.join('、');
+      const sensors = (d.evidence.sensors || []).join(', ');
+      return `${positions}(${sensors})`;
+    }
+    if (d.position) return d.position;
+    return '—';
+  };
 </script>
 
 {#if findings.length === 0}
@@ -21,7 +32,7 @@
 {:else}
   <table>
     <thead>
-      <tr><th>级别</th><th>类型</th><th>窗口</th><th>说明</th></tr>
+      <tr><th>级别</th><th>类型</th><th>窗口</th><th>说明</th><th>证据来源</th></tr>
     </thead>
     <tbody>
       {#each findings as f}
@@ -30,6 +41,7 @@
           <td>{KIND_LABEL[f.kind] || f.kind}</td>
           <td class="win">{#if f.window}{fmt(f.window[0])} – {fmt(f.window[1])}{:else}—{/if}</td>
           <td>{f.message}</td>
+          <td class="src">{srcOf(f)}</td>
         </tr>
       {/each}
     </tbody>
@@ -45,5 +57,6 @@
   .badge.info { background: #ddf4ff; color: #0969da; }
   tr.critical { background: #fff8f8; }
   .win { white-space: nowrap; color: #57606a; font-size: 12px; }
+  .src { font-size: 12px; color: #57606a; }
   .none { color: #57606a; font-size: 13px; }
 </style>

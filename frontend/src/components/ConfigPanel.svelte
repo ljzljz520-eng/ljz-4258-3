@@ -26,21 +26,49 @@
     try { await fn(); msg = ''; await refresh(); }
     catch (e) { msg = e.message; }
   }
-  const freezeTube = () => guard(() => api.freezeTube(Number(volume), null));
-  const freezeSpec = () => guard(() => api.freezeSpec({
-    min_hold_temp_c: Number(minTemp),
-    max_clock_skew_s: Number(skew),
-    max_gap_s: Number(gap),
-    max_divert_feedback_s: Number(divertDelay),
-    flow_drop_ratio: Number(dropRatio),
-  }));
-  const freezeInstr = () => guard(() => api.freezeInstrument({
-    instrument_id: instrId, label: instrLabel,
-    calibrated_at: new Date(instrCal).toISOString(),
-  }));
-  const notice = (kind) => guard(() => api.addNotice({
-    kind, instrument_id: kind === 'probe_recalibrated' ? instrId : null, message: '',
-  }));
+  // 提交前客户端校验(后端同样拒绝并返回 400):空标签/非正阈值/空位号不得落库
+  const freezeTube = () => {
+    const v = Number(volume);
+    if (!Number.isFinite(v) || v <= 0) { msg = '保持管容积必须为有限正数'; return; }
+    guard(() => api.freezeTube(v, null));
+  };
+  const freezeSpec = () => {
+    const body = {
+      min_hold_temp_c: Number(minTemp),
+      max_clock_skew_s: Number(skew),
+      max_gap_s: Number(gap),
+      max_divert_feedback_s: Number(divertDelay),
+      flow_drop_ratio: Number(dropRatio),
+    };
+    if (!Number.isFinite(body.min_hold_temp_c)) { msg = '低温限值必须为有限数值'; return; }
+    for (const [label, v] of [
+      ['时钟差阈值', body.max_clock_skew_s],
+      ['证据缺口阈值', body.max_gap_s],
+      ['分流反馈阈值', body.max_divert_feedback_s],
+    ]) {
+      if (!Number.isFinite(v) || v <= 0) { msg = `${label}必须为有限正数`; return; }
+    }
+    if (!Number.isFinite(body.flow_drop_ratio) || body.flow_drop_ratio <= 0 || body.flow_drop_ratio > 1) {
+      msg = '流量突降比例必须在 (0, 1] 区间'; return;
+    }
+    guard(() => api.freezeSpec(body));
+  };
+  const freezeInstr = () => {
+    if (!instrId.trim()) { msg = '仪表位号不能为空'; return; }
+    if (!instrLabel.trim()) { msg = '仪表标签不能为空'; return; }
+    const cal = new Date(instrCal);
+    if (Number.isNaN(cal.getTime())) { msg = '校准时间无效'; return; }
+    guard(() => api.freezeInstrument({
+      instrument_id: instrId.trim(), label: instrLabel.trim(),
+      calibrated_at: cal.toISOString(),
+    }));
+  };
+  const notice = (kind) => {
+    if (kind === 'probe_recalibrated' && !instrId.trim()) { msg = '仪表位号不能为空'; return; }
+    guard(() => api.addNotice({
+      kind, instrument_id: kind === 'probe_recalibrated' ? instrId.trim() : null, message: '',
+    }));
+  };
 </script>
 
 <div class="cfg">

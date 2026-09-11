@@ -367,3 +367,116 @@ fn run_all_aggregates_findings() {
     // 无配置缺失
     assert!(!kinds(&findings).contains(&FindingKind::ConfigMissing));
 }
+
+// ---------- 证据归属:批次与传感器位置显式化 ----------
+
+#[test]
+fn sensor_position_registered_and_unknown() {
+    assert_eq!(sensor_position("TT-101"), "保持管出口(加热段末端)");
+    assert_eq!(sensor_position("FT-201"), "保持管入口(进料流量计)");
+    assert_eq!(sensor_position("XV-301"), "分流阀(转向阀)");
+    // 未登记位号必须显式标注,而不是留空
+    assert_eq!(sensor_position("TT-999"), "未登记位置");
+}
+
+#[test]
+fn evidence_rows_carry_batch_and_position() {
+    let t0 = base();
+    let temps = vec![temp(t0, 74.0)];
+    let flows = vec![flow(t0 + Duration::seconds(1), 10_000.0)];
+    let diverts = vec![divert(t0 + Duration::seconds(2), DivertPosition::Divert)];
+    let rows = evidence_rows(7, "全脂牛奶 3.2%", &temps, &flows, &diverts);
+    assert_eq!(rows.len(), 3);
+    // 按设备时钟升序合并三通道
+    assert!(rows.windows(2).all(|w| w[0].device_time <= w[1].device_time));
+    // 每行都显式归属到产品批,且位置已登记
+    for r in &rows {
+        assert_eq!(r.batch_id, 7);
+        assert_eq!(r.product_name, "全脂牛奶 3.2%");
+        assert_ne!(r.position, "未登记位置");
+    }
+    assert_eq!(rows[0].channel, Channel::Temperature);
+    assert_eq!(rows[0].sensor_id, "TT-101");
+    assert_eq!(rows[0].position, "保持管出口(加热段末端)");
+    assert_eq!(rows[1].channel, Channel::Flow);
+    assert_eq!(rows[2].channel, Channel::Divert);
+    assert_eq!(rows[2].position, "分流阀(转向阀)");
+}
+
+#[test]
+fn sensor_sites_of_dedups_and_maps_channel() {
+    let t0 = base();
+    let temps = vec![temp(t0, 74.0), temp(t0 + Duration::seconds(1), 74.5)];
+    let flows = vec![flow(t0, 10_000.0)];
+    let sites = sensor_sites_of(&temps, &flows, &[]);
+    assert_eq!(sites.len(), 2, "同一位号重复出现必须去重");
+    assert_eq!(sites[0].sensor_id, "TT-101");
+    assert_eq!(sites[0].channel, Channel::Temperature);
+    assert_eq!(sites[1].sensor_id, "FT-201");
+    assert_eq!(sites[1].channel, Channel::Flow);
+}
+
+#[test]
+fn findings_carry_explicit_evidence_source() {
+    let t0 = base();
+    // 低温发现:证据来源 = 温度通道 TT-101 @ 保持管出口
+    let temps = vec![temp(t0 + Duration::seconds(1), 70.0)];
+    let diverts = vec![divert(t0, DivertPosition::Forward)];
+    let findings = check_low_temperature(&temps, &diverts, 72.0);
+    assert_eq!(findings.len(), 1);
+    let ev = &findings[0].detail["evidence"];
+    assert_eq!(ev["channel"], "temperature");
+    assert_eq!(ev["sensors"][0], "TT-101");
+    assert_eq!(ev["positions"][0], "保持管出口(加热段末端)");
+
+    // 时钟差发现:detail 直接给出安装位置
+    let mut s = temp(t0, 74.0);
+    s.ingest_time = t0 + Duration::seconds(3);
+    let drift = check_clock_drift(&[s], &[], &[], &spec());
+    assert_eq!(drift.len(), 1);
+    assert_eq!(drift[0].detail["position"], "保持管出口(加热段末端)");
+    assert_eq!(drift[0].detail["evidence"]["channel"], "temperature");
+}
+
+// ---------- 冻结输入校验(空标签/非正阈值/空产品名必须报错) ----------
+
+#[test]
+fn validation_rejects_empty_product_name() {
+    assert!(validate_product_name("").is_err());
+    assert!(validate_product_name("   ").is_err());
+    assert!(validate_product_name("全脂牛奶 3.2%").is_ok());
+}
+
+#[test]
+fn validation_rejects_non_positive_volume() {
+    assert!(validate_volume_l(0.0).is_err());
+    assert!(validate_volume_l(-5.0).is_err());
+    assert!(validate_volume_l(f64::NAN).is_err(), "NaN 必须被拒绝");
+    assert!(validate_volume_l(f64::INFINITY).is_err());
+    assert!(validate_volume_l(120.0).is_ok());
+}
+
+#[test]
+fn validation_rejects_empty_instrument_fields() {
+    assert!(validate_instrument("", "TT-101/A").is_err());
+    assert!(validate_instrument("TT-101", "").is_err());
+    assert!(validate_instrument("TT-101", "   ").is_err());
+    assert!(validate_instrument("TT-101", "TT-101/A").is_ok());
+}
+
+#[test]
+fn validation_rejects_non_positive_thresholds() {
+    // 非正阈值
+    assert!(validate_spec_thresholds(72.0, 0.0, 10.0, 2.0, 0.6).is_err());
+    assert!(validate_spec_thresholds(72.0, 1.0, -1.0, 2.0, 0.6).is_err());
+    assert!(validate_spec_thresholds(72.0, 1.0, 10.0, 0.0, 0.6).is_err());
+    // 流量比超出 (0, 1]
+    assert!(validate_spec_thresholds(72.0, 1.0, 10.0, 2.0, 0.0).is_err());
+    assert!(validate_spec_thresholds(72.0, 1.0, 10.0, 2.0, 1.5).is_err());
+    // 非有限值
+    assert!(validate_spec_thresholds(f64::NAN, 1.0, 10.0, 2.0, 0.6).is_err());
+    assert!(validate_spec_thresholds(72.0, f64::NAN, 10.0, 2.0, 0.6).is_err());
+    // 合法输入
+    assert!(validate_spec_thresholds(72.0, 1.0, 10.0, 2.0, 0.6).is_ok());
+    assert!(validate_spec_thresholds(72.0, 1.0, 10.0, 2.0, 1.0).is_ok());
+}

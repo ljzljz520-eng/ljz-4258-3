@@ -7,9 +7,12 @@
   export let events = [];
   export let findings = [];
   export let spec = null;
+  // 本批遥测的传感器来源(位号 + 通道 + 安装位置),用于标注证据边界
+  export let sensorSites = [];
 
   const W = 940, H = 300, PL = 46, PR = 52, PT = 16, PB = 26;
   const KIND_LABEL = { changeover: '换料', cycle: '循环', shutdown: '停机', sample: '取样' };
+  const CH_LABEL = { temperature: '温度', flow: '流量', divert: '分流' };
 
   $: t0 = batch ? new Date(batch.started_at).getTime() : 0;
   $: t1 = batch ? new Date(batch.ended_at || Date.now()).getTime() : 1;
@@ -87,3 +90,17 @@
   <text x="6" y={PT + 10} font-size="10" fill="#1a7f37">°C</text>
   <text x={W - PR + 6} y={PT + 10} font-size="10" fill="#0969da">L/h</text>
 </svg>
+
+{#if sensorSites.length}
+  <p class="sites">
+    证据来源:
+    {#each sensorSites as s, i}
+      <span class="site">{CH_LABEL[s.channel] || s.channel} <b>{s.sensor_id}</b>({s.position})</span>{i < sensorSites.length - 1 ? ' · ' : ''}
+    {/each}
+  </p>
+{/if}
+
+<style>
+  .sites { font-size: 12px; color: #57606a; margin: 6px 0 0; }
+  .sites b { color: #1f2328; }
+</style>

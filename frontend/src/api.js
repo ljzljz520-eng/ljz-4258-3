@@ -30,6 +30,7 @@ export const api = {
     req('/api/batches', { method: 'POST', body: JSON.stringify({ product_name }) }),
   closeBatch: (id) => req(`/api/batches/${id}/close`, { method: 'POST' }),
   timeline: (id) => req(`/api/batches/${id}/timeline`),
+  evidence: (id, channel = 'all') => req(`/api/batches/${id}/evidence?channel=${channel}`),
   analyze: (id) => req(`/api/batches/${id}/analyze`, { method: 'POST' }),
   passage: (id, entry) =>
     req(`/api/batches/${id}/passage?entry=${encodeURIComponent(entry)}`),
