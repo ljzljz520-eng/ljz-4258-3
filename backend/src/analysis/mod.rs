@@ -2,6 +2,8 @@
 //! 不计算杀菌设定值,不输出任何控制动作。
 pub mod checks;
 pub mod passage;
+pub mod recirculation;
 
 pub use checks::*;
 pub use passage::*;
+pub use recirculation::*;

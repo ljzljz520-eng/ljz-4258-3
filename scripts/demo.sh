@@ -31,3 +31,11 @@ curl -s -X POST $B/batches/$BID/analyze | jq -r '.[] | "[\(.severity)] \(.kind):
 echo "6) 通过窗重建(批次开始时刻进入)"
 ENTRY=$(curl -s $B/batches/$BID | jq -r .started_at)
 curl -s "$B/batches/$BID/passage?entry=$ENTRY" | jq .
+
+echo "7) 再循环产品链(通过尝试 + 最终去向全部热暴露)"
+curl -s $B/batches/$BID/recirculation \
+  | jq '{attempts: [.chain.attempts[] | {seq, forward_l, returned_l, exposure: (.exposure != null)}],
+         forward_volume_l: .chain.forward_volume_l,
+         returned_volume_l: .chain.returned_volume_l,
+         pending_return_l: .chain.pending_return_l,
+         findings: [.findings[] | {kind, severity}]}'

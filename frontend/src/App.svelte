@@ -7,6 +7,7 @@
   import ConfigPanel from './components/ConfigPanel.svelte';
   import EventBar from './components/EventBar.svelte';
   import EvidencePanel from './components/EvidencePanel.svelte';
+  import RecirculationView from './components/RecirculationView.svelte';
 
   let role = 'operator';
   let user = 'op-1';
@@ -15,6 +16,7 @@
   let batches = [];
   let selected = null;
   let timeline = null;
+  let recirc = null;
   let error = '';
   let productName = '全脂牛奶 3.2%';
   let timer = null;
@@ -24,8 +26,11 @@
   }
   async function refreshTimeline() {
     if (selected == null) return;
-    try { timeline = await api.timeline(selected); error = ''; }
-    catch (e) { error = e.message; }
+    try {
+      timeline = await api.timeline(selected);
+      recirc = await api.recirculation(selected);
+      error = '';
+    } catch (e) { error = e.message; }
   }
   async function selectBatch(id) { selected = id; await refreshTimeline(); }
   async function createBatch() {
@@ -123,6 +128,11 @@
       <section>
         <h2>保持段通过窗重建</h2>
         <PassageView batch={timeline.batch} />
+      </section>
+
+      <section>
+        <h2>再循环产品链 <small>每次回到平衡罐 = 新的通过尝试 · 最终去向保留全部热暴露</small></h2>
+        <RecirculationView data={recirc} />
       </section>
 
       <section>

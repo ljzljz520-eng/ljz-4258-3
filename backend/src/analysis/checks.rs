@@ -64,10 +64,20 @@ pub fn run_all(input: &CheckInput) -> Vec<Finding> {
     ));
     out.extend(check_instrument_label(input.notices, input.instruments));
     out.extend(check_holding_volume(input.notices, input.tube_configs));
+    // 再循环产品链:每次回到平衡罐形成新的通过尝试;链级缺陷(回流量未计、
+    // 两批混合、跨清洗边界、首次通过缺温度、部分回流料未取用)在此统一判定。
+    let chain = crate::analysis::recirculation::build_chain(
+        input.batch_start,
+        input.batch_end,
+        input.flows,
+        input.diverts,
+        input.temps,
+    );
+    out.extend(crate::analysis::recirculation::check_chain(&chain, input.events));
     out
 }
 
-fn mk(
+pub(crate) fn mk(
     kind: FindingKind,
     severity: Severity,
     window: Option<(DateTime<Utc>, DateTime<Utc>)>,
@@ -85,7 +95,7 @@ fn mk(
 
 /// 证据来源描述:让每条发现的"结论依据哪些传感器、哪个安装位置"显式可核对。
 /// 位号去重排序;安装位置来自 sensor_position 登记(未登记位号显式标注)。
-fn evidence_json(channel: Channel, mut sensors: Vec<&str>) -> serde_json::Value {
+pub(crate) fn evidence_json(channel: Channel, mut sensors: Vec<&str>) -> serde_json::Value {
     sensors.sort();
     sensors.dedup();
     let positions: Vec<&str> = sensors.iter().map(|s| sensor_position(s)).collect();

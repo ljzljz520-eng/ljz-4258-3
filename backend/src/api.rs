@@ -31,6 +31,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/batches/{id}/timeline", get(timeline))
         .route("/api/batches/{id}/evidence", get(evidence))
         .route("/api/batches/{id}/passage", get(passage))
+        .route("/api/batches/{id}/recirculation", get(recirculation))
         .route(
             "/api/configs/holding-tube",
             get(list_tube_configs).post(freeze_tube),
@@ -449,6 +450,36 @@ async fn evidence(
 #[derive(Deserialize)]
 struct PassageQuery {
     entry: DateTime<Utc>,
+}
+
+#[derive(serde::Serialize)]
+struct RecirculationResponse {
+    batch: Batch,
+    /// 再循环产品链:通过尝试序列 + 物料平衡;最终去向保留全部热暴露
+    chain: analysis::RecirculationChain,
+    /// 链级发现(回流量未计/两批混合/跨清洗边界/首次通过缺温度/部分回流料未取用)
+    findings: Vec<Finding>,
+}
+
+/// 再循环产品链:每次回到平衡罐形成新的通过尝试;
+/// 最终去向保留链上全部热暴露,不得只显示最后一次合格段。
+async fn recirculation(
+    State(s): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Json<RecirculationResponse>, ApiError> {
+    let batch = repo::get_batch(&s.pool, id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("批次 {id} 不存在")))?;
+    let end = batch.ended_at.unwrap_or_else(Utc::now);
+    let (temps, flows, diverts) = repo::telemetry_window(&s.pool, batch.started_at, end).await?;
+    let events = repo::list_events(&s.pool, id).await?;
+    let chain = analysis::build_chain(batch.started_at, end, &flows, &diverts, &temps);
+    let findings = analysis::check_chain(&chain, &events);
+    Ok(Json(RecirculationResponse {
+        batch,
+        chain,
+        findings,
+    }))
 }
 
 async fn passage(

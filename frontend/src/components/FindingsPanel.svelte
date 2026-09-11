@@ -11,6 +11,11 @@
     product_held: '停机滞留',
     passage_over_divert: '通过窗跨分流',
     config_missing: '配置缺失',
+    recirculation_unmetered: '回流量未计',
+    balance_tank_mixing: '平衡罐两批混合',
+    recirculation_across_cleaning: '回流跨清洗边界',
+    first_passage_temp_missing: '首次通过缺温度',
+    partial_recirculation_drawoff: '部分回流料未取用',
   };
   const SEV_LABEL = { info: '提示', warning: '警告', critical: '严重' };
   const fmt = (iso) => (iso ? new Date(iso).toLocaleTimeString() : '');

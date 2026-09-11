@@ -5,6 +5,7 @@
 //!   360-380  分流动作,且反馈设备时间戳滞后 5s(反馈迟到)
 //!   480-540  停机,流量归零(产品滞留)
 //!   600-660  温度通道设备时钟滞后 3s(时钟差)
+//!   700-725  再次分流(再循环第二段:回到平衡罐 → 新的通过尝试)
 use super::{Reading, TelemetrySource};
 use crate::domain::{DivertPosition, Sample};
 use chrono::Utc;
@@ -34,6 +35,7 @@ impl Simulator {
             }
             480..=540 => flow = 0.0,
             600..=660 => temp_lag = 3,
+            700..=725 => divert = DivertPosition::Divert,
             _ => {}
         }
         (temp, flow, divert, temp_lag, divert_lag)

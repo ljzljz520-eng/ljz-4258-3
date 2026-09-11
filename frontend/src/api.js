@@ -34,6 +34,7 @@ export const api = {
   analyze: (id) => req(`/api/batches/${id}/analyze`, { method: 'POST' }),
   passage: (id, entry) =>
     req(`/api/batches/${id}/passage?entry=${encodeURIComponent(entry)}`),
+  recirculation: (id) => req(`/api/batches/${id}/recirculation`),
   addEvent: (id, kind, note) =>
     req(`/api/batches/${id}/events`, { method: 'POST', body: JSON.stringify({ kind, note }) }),
   freezeTube: (volume_l, note) =>

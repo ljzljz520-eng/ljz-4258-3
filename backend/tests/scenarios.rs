@@ -480,3 +480,261 @@ fn validation_rejects_non_positive_thresholds() {
     assert!(validate_spec_thresholds(72.0, 1.0, 10.0, 2.0, 0.6).is_ok());
     assert!(validate_spec_thresholds(72.0, 1.0, 10.0, 2.0, 1.0).is_ok());
 }
+
+// ---------- 场景 6:再循环产品链 ----------
+// 每次回到平衡罐形成新的通过尝试;最终去向保留所有热暴露,
+// 不得只显示最后一次合格段。
+
+fn flow_series(t0: DateTime<Utc>, secs: i64, v: f64) -> Vec<Sample<f64>> {
+    (0..=secs).map(|i| flow(t0 + Duration::seconds(i), v)).collect()
+}
+
+fn temp_series(t0: DateTime<Utc>, secs: i64, v: f64) -> Vec<Sample<f64>> {
+    (0..=secs).map(|i| temp(t0 + Duration::seconds(i), v)).collect()
+}
+
+fn divert_series(t0: DateTime<Utc>, points: &[(i64, DivertPosition)]) -> Vec<Sample<DivertPosition>> {
+    points
+        .iter()
+        .map(|(s, p)| divert(t0 + Duration::seconds(*s), *p))
+        .collect()
+}
+
+fn op_event(kind: EventKind, at: DateTime<Utc>) -> OperatorEvent {
+    OperatorEvent {
+        id: 1,
+        batch_id: 1,
+        kind,
+        at,
+        note: None,
+        marked_by: "op".into(),
+    }
+}
+
+#[test]
+fn scenario_6_every_return_forms_new_attempt_and_final_keeps_all_exposures() {
+    let t0 = base();
+    let flows = flow_series(t0, 600, 10_000.0);
+    // 两段分流 [100,120]、[200,220] → 两次回到平衡罐 → 三次通过尝试
+    let diverts = divert_series(
+        t0,
+        &[
+            (0, DivertPosition::Forward),
+            (100, DivertPosition::Divert),
+            (120, DivertPosition::Forward),
+            (200, DivertPosition::Divert),
+            (220, DivertPosition::Forward),
+        ],
+    );
+    let temps = temp_series(t0, 600, 74.0);
+    let chain = build_chain(t0, t0 + Duration::seconds(600), &flows, &diverts, &temps);
+
+    assert_eq!(chain.attempts.len(), 3, "两次回到平衡罐必须形成三次通过尝试");
+    assert_eq!(chain.attempts[0].window, (t0, t0 + Duration::seconds(120)));
+    assert_eq!(chain.attempts[1].window, (t0 + Duration::seconds(120), t0 + Duration::seconds(220)));
+    // 最终去向保留全部通过的热暴露,不得只显示最后一次合格段
+    assert!(
+        chain.attempts.iter().all(|a| a.exposure.is_some()),
+        "每次通过的热暴露都必须保留在链上"
+    );
+    // 回流量:两段 20s × 10000 L/h ≈ 111.1 L
+    let expect_returned = 2.0 * 20.0 * 10_000.0 / 3600.0;
+    assert!((chain.returned_volume_l - expect_returned).abs() < 1.0);
+    // 物料平衡:前向 + 回流 = 总流过体积
+    let total = 600.0 * 10_000.0 / 3600.0;
+    assert!((chain.forward_volume_l + chain.returned_volume_l - total).abs() < 1.0);
+    // 回流料全部走完 → 无未取用
+    assert!(chain.pending_return_l < CHAIN_EPS_L);
+    // 无事件、温度齐全、流量齐全 → 无链级发现
+    assert!(check_chain(&chain, &[]).is_empty());
+}
+
+#[test]
+fn scenario_6a_unmetered_recirculation_flow() {
+    let t0 = base();
+    // 流量通道在回流段 [100,120] 断档 → 回流量未计
+    let mut flows = Vec::new();
+    for i in 0..=300 {
+        if (100..=120).contains(&i) {
+            continue;
+        }
+        flows.push(flow(t0 + Duration::seconds(i), 10_000.0));
+    }
+    let diverts = divert_series(
+        t0,
+        &[
+            (0, DivertPosition::Forward),
+            (100, DivertPosition::Divert),
+            (120, DivertPosition::Forward),
+        ],
+    );
+    let temps = temp_series(t0, 300, 74.0);
+    let chain = build_chain(t0, t0 + Duration::seconds(300), &flows, &diverts, &temps);
+
+    let ret = chain
+        .legs
+        .iter()
+        .find(|l| l.kind == LegKind::Return)
+        .expect("必须存在回流段");
+    assert!(!ret.metered, "回流段内无流量样本必须显式标记未计量");
+
+    let findings = check_chain(&chain, &[]);
+    assert!(kinds(&findings).contains(&FindingKind::RecirculationUnmetered));
+    let f = findings
+        .iter()
+        .find(|f| f.kind == FindingKind::RecirculationUnmetered)
+        .unwrap();
+    assert_eq!(f.severity, Severity::Critical);
+    // 证据归属:流量通道 + 已登记安装位置
+    assert_eq!(f.detail["evidence"]["channel"], "flow");
+    assert_eq!(f.detail["evidence"]["positions"][0], "保持管入口(进料流量计)");
+}
+
+#[test]
+fn scenario_6b_two_batches_mix_in_balance_tank() {
+    let t0 = base();
+    let flows = flow_series(t0, 600, 10_000.0);
+    // 回流 [100,120] ≈ 55.6 L;之后前向流逐渐把回流料送往灌装机
+    let diverts = divert_series(
+        t0,
+        &[
+            (0, DivertPosition::Forward),
+            (100, DivertPosition::Divert),
+            (120, DivertPosition::Forward),
+        ],
+    );
+    let temps = temp_series(t0, 600, 74.0);
+    let chain = build_chain(t0, t0 + Duration::seconds(600), &flows, &diverts, &temps);
+
+    // 换料发生在回流料未走完时(回流刚结束 10s,罐内仍有库存)→ 两批混合
+    let early = op_event(EventKind::Changeover, t0 + Duration::seconds(130));
+    let findings = check_chain(&chain, &[early]);
+    assert!(kinds(&findings).contains(&FindingKind::BalanceTankMixing));
+    let f = findings
+        .iter()
+        .find(|f| f.kind == FindingKind::BalanceTankMixing)
+        .unwrap();
+    assert_eq!(f.severity, Severity::Critical);
+    assert!(f.detail["pending_return_l"].as_f64().unwrap() > 0.0);
+
+    // 换料发生在回流料走完后(400s 时库存已清零)→ 不报
+    let late = op_event(EventKind::Changeover, t0 + Duration::seconds(400));
+    let findings = check_chain(&chain, &[late]);
+    assert!(!kinds(&findings).contains(&FindingKind::BalanceTankMixing));
+}
+
+#[test]
+fn scenario_6c_recirculation_across_cleaning_boundary() {
+    let t0 = base();
+    let flows = flow_series(t0, 600, 10_000.0);
+    let diverts = divert_series(
+        t0,
+        &[
+            (0, DivertPosition::Forward),
+            (100, DivertPosition::Divert),
+            (120, DivertPosition::Forward),
+        ],
+    );
+    let temps = temp_series(t0, 600, 74.0);
+    let chain = build_chain(t0, t0 + Duration::seconds(600), &flows, &diverts, &temps);
+
+    // 清洗(循环)开始时回流料未走完 → 回流料跨清洗边界
+    let dirty = op_event(EventKind::Cycle, t0 + Duration::seconds(130));
+    let findings = check_chain(&chain, &[dirty]);
+    assert!(kinds(&findings).contains(&FindingKind::RecirculationAcrossCleaning));
+    let f = findings
+        .iter()
+        .find(|f| f.kind == FindingKind::RecirculationAcrossCleaning)
+        .unwrap();
+    assert_eq!(f.severity, Severity::Critical);
+
+    // 清洗发生在回流料走完后 → 不报
+    let clean = op_event(EventKind::Cycle, t0 + Duration::seconds(400));
+    let findings = check_chain(&chain, &[clean]);
+    assert!(!kinds(&findings).contains(&FindingKind::RecirculationAcrossCleaning));
+
+    // 清洗期间仍在回流(事件落在回流段内)→ 必报
+    let mid_return = op_event(EventKind::Cycle, t0 + Duration::seconds(110));
+    let findings = check_chain(&chain, &[mid_return]);
+    assert!(kinds(&findings).contains(&FindingKind::RecirculationAcrossCleaning));
+}
+
+#[test]
+fn scenario_6d_first_passage_missing_temperature() {
+    let t0 = base();
+    let flows = flow_series(t0, 300, 10_000.0);
+    let diverts = divert_series(
+        t0,
+        &[
+            (0, DivertPosition::Forward),
+            (100, DivertPosition::Divert),
+            (120, DivertPosition::Forward),
+        ],
+    );
+    // 温度通道在第一次通过 [0,120] 内无记录,130s 后才有
+    let temps: Vec<_> = (130..=300)
+        .map(|i| temp(t0 + Duration::seconds(i), 74.0))
+        .collect();
+    let chain = build_chain(t0, t0 + Duration::seconds(300), &flows, &diverts, &temps);
+
+    assert_eq!(chain.attempts.len(), 2);
+    assert!(chain.attempts[0].exposure.is_none(), "第一次通过缺温度记录");
+    assert!(chain.attempts[1].exposure.is_some());
+    // 链不得丢弃缺证据的第一次通过:两次尝试都必须保留在链上
+    let findings = check_chain(&chain, &[]);
+    assert!(kinds(&findings).contains(&FindingKind::FirstPassageTempMissing));
+    let f = findings
+        .iter()
+        .find(|f| f.kind == FindingKind::FirstPassageTempMissing)
+        .unwrap();
+    assert_eq!(f.severity, Severity::Critical);
+    assert_eq!(f.detail["evidence"]["channel"], "temperature");
+}
+
+#[test]
+fn scenario_6e_partial_recirculation_drawoff() {
+    let t0 = base();
+    let flows = flow_series(t0, 200, 10_000.0);
+    // 回流 [180,195] ≈ 41.7 L;之后前向仅 5s ≈ 13.9 L → ≈27.8 L 回流料未进入最终去向
+    let diverts = divert_series(
+        t0,
+        &[
+            (0, DivertPosition::Forward),
+            (180, DivertPosition::Divert),
+            (195, DivertPosition::Forward),
+        ],
+    );
+    let temps = temp_series(t0, 200, 74.0);
+    let chain = build_chain(t0, t0 + Duration::seconds(200), &flows, &diverts, &temps);
+
+    let expect_pending = 10.0 * 10_000.0 / 3600.0; // 41.7 − 13.9 ≈ 27.8 L
+    assert!(
+        (chain.pending_return_l - expect_pending).abs() < 1.0,
+        "未走完回流料必须留在账上,得到 {}",
+        chain.pending_return_l
+    );
+    let findings = check_chain(&chain, &[]);
+    assert!(kinds(&findings).contains(&FindingKind::PartialRecirculationDrawoff));
+    let f = findings
+        .iter()
+        .find(|f| f.kind == FindingKind::PartialRecirculationDrawoff)
+        .unwrap();
+    assert_eq!(f.severity, Severity::Warning);
+    // 去向台账:回流总量、前向总量、未取用量同时显式
+    assert!(f.detail["returned_volume_l"].as_f64().unwrap() > 40.0);
+    assert!(f.detail["forward_volume_l"].as_f64().unwrap() > 0.0);
+}
+
+#[test]
+fn scenario_6_finding_kind_roundtrip() {
+    // 落库/读取依赖 as_str ↔ parse 一一对应
+    for k in [
+        FindingKind::RecirculationUnmetered,
+        FindingKind::BalanceTankMixing,
+        FindingKind::RecirculationAcrossCleaning,
+        FindingKind::FirstPassageTempMissing,
+        FindingKind::PartialRecirculationDrawoff,
+    ] {
+        assert_eq!(FindingKind::parse(k.as_str()), Some(k));
+    }
+}

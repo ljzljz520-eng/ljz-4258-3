@@ -435,6 +435,12 @@ pub enum FindingKind {
     ProductHeld,          // 停机滞留,热历程不可解释
     PassageOverDivert,    // 通过窗与分流状态重叠
     ConfigMissing,        // 缺少冻结配置,无法解释
+    // ---- 再循环产品链 ----
+    RecirculationUnmetered,      // 回流量未计(回流段无流量证据,物料平衡不闭合)
+    BalanceTankMixing,           // 两批在平衡罐混合(换料时回流料未走完)
+    RecirculationAcrossCleaning, // 再循环跨清洗边界(清洗时回流料未走完/清洗中仍回流)
+    FirstPassageTempMissing,     // 第一次通过记录缺温度(该段热暴露无法验证)
+    PartialRecirculationDrawoff, // 最终产品只取部分回流料(链尾仍有未走完回流料)
 }
 
 impl FindingKind {
@@ -450,6 +456,11 @@ impl FindingKind {
             Self::ProductHeld => "product_held",
             Self::PassageOverDivert => "passage_over_divert",
             Self::ConfigMissing => "config_missing",
+            Self::RecirculationUnmetered => "recirculation_unmetered",
+            Self::BalanceTankMixing => "balance_tank_mixing",
+            Self::RecirculationAcrossCleaning => "recirculation_across_cleaning",
+            Self::FirstPassageTempMissing => "first_passage_temp_missing",
+            Self::PartialRecirculationDrawoff => "partial_recirculation_drawoff",
         }
     }
     pub fn parse(s: &str) -> Option<Self> {
@@ -464,6 +475,11 @@ impl FindingKind {
             "product_held" => Self::ProductHeld,
             "passage_over_divert" => Self::PassageOverDivert,
             "config_missing" => Self::ConfigMissing,
+            "recirculation_unmetered" => Self::RecirculationUnmetered,
+            "balance_tank_mixing" => Self::BalanceTankMixing,
+            "recirculation_across_cleaning" => Self::RecirculationAcrossCleaning,
+            "first_passage_temp_missing" => Self::FirstPassageTempMissing,
+            "partial_recirculation_drawoff" => Self::PartialRecirculationDrawoff,
             _ => return None,
         })
     }
